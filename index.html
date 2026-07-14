@@ -1,0 +1,268 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Ruh Haline Göre Otomatik Film Önerici (Statik)</title>
+<script src="https://cdn.jsdelivr.net/npm/@vladmandic/face-api/dist/face-api.js"></script>
+<script src="movies_data.js"></script>
+<style>
+  :root { color-scheme: dark; }
+  body {
+    margin: 0; font-family: system-ui, Arial, sans-serif;
+    background: #111; color: #eee; display: flex; flex-direction: column;
+    align-items: center; padding: 16px;
+  }
+  h1 { font-size: 1.2rem; margin: 4px 0 12px; }
+  #setup {
+    width: 100%; max-width: 640px; display: grid;
+    grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 12px;
+  }
+  #setup label { display: block; font-size: 0.85rem; margin-bottom: 4px; color: #aaa; }
+  #setup select, #setup input { width: 100%; padding: 6px; border-radius: 6px; border: 1px solid #444; background: #1c1c1c; color: #eee; }
+  #video_wrap { position: relative; width: 100%; max-width: 640px; }
+  video { width: 100%; border-radius: 10px; background: #000; display: block; }
+  #status { font-size: 0.8rem; color: #999; margin: 6px 0; min-height: 1em; }
+  #bottom_bar {
+    width: 100%; max-width: 640px; min-height: 140px; margin-top: 4px;
+    border-top: 2px solid #444; padding-top: 12px;
+  }
+  #bottom_bar h3 { margin: 6px 0; font-size: 1.15rem; }
+  #bottom_bar a { color: #6ea8fe; }
+  #history_box {
+    width: 100%; max-width: 640px; margin-top: 16px; font-size: 0.85rem;
+    line-height: 1.6; max-height: 220px; overflow-y: auto;
+  }
+  #history_box a { color: #6ea8fe; }
+  #controls { width: 100%; max-width: 640px; display: flex; gap: 10px; margin-top: 14px; }
+  button {
+    padding: 8px 14px; border-radius: 8px; border: none; cursor: pointer;
+    background: #3b6ef6; color: white; font-size: 0.9rem;
+  }
+  button:disabled { background: #444; cursor: not-allowed; }
+</style>
+</head>
+<body>
+
+<h1>🎬 Ruh Haline Göre Otomatik Film Önerici — Statik Sürüm</h1>
+
+<div id="setup">
+  <div>
+    <label for="mood_goal">Ruh hali hedefi</label>
+    <select id="mood_goal">
+      <option value="auto">Otomatik (yüz ifademe göre karar ver)</option>
+      <option value="happier">Daha mutlu hissetmek istiyorum</option>
+      <option value="reinforce">Şu anki ruh halimi pekiştirmek istiyorum</option>
+    </select>
+  </div>
+  <div>
+    <label for="genre">Tür</label>
+    <select id="genre"><option value="">Tümü</option></select>
+  </div>
+  <div>
+    <label for="min_rating">Minimum Puan: <span id="min_rating_val">0</span></label>
+    <input type="range" id="min_rating" min="0" max="9" step="0.5" value="0">
+  </div>
+  <div>
+    <label for="sort_by">Sıralama</label>
+    <select id="sort_by">
+      <option value="votes">Popülerlik (oy sayısı)</option>
+      <option value="rating">Puan (Yüksek → Düşük)</option>
+      <option value="year_desc">Yeni → Eski</option>
+      <option value="year_asc">Eski → Yeni</option>
+    </select>
+  </div>
+</div>
+
+<div id="video_wrap">
+  <video id="video" autoplay muted playsinline></video>
+</div>
+<div id="status">Modeller yükleniyor...</div>
+
+<div id="bottom_bar">
+  <div id="bottom_text">Kamerayı başlatınca öneriler burada görünecek.</div>
+</div>
+
+<div id="controls">
+  <button id="start_btn">▶️ Kamerayı Başlat</button>
+</div>
+
+<h3 style="width:100%;max-width:640px;margin-top:18px;">📜 Öneri Geçmişi (bu oturuma özel, sayfa yenilenince sıfırlanır)</h3>
+<div id="history_box">Henüz kayıt yok.</div>
+
+<script>
+// -----------------------------------------------------------------
+// Veri ve ayarlar — MOVIES_DATA, movies_data.js dosyasından geliyor
+// (~4450 gerçek IMDb filmi: title, year, genres, rating, votes, imdb_id)
+// -----------------------------------------------------------------
+const EMOTION_TO_CATEGORY = {
+  happy: "neseli", surprised: "neseli",
+  neutral: "dusundurucu",
+  sad: "huzunlu",
+  fearful: "gergin", disgusted: "gergin",
+  angry: "enerjik",
+};
+
+const MOOD_TO_GENRES = {
+  neseli: ["Comedy", "Animation", "Family", "Musical", "Music"],
+  huzunlu: ["Drama", "Romance"],
+  enerjik: ["Action", "Adventure", "Sport"],
+  gergin: ["Thriller", "Horror", "Crime", "Mystery"],
+  dusundurucu: ["Sci-Fi", "Mystery", "Biography", "History", "Documentary", "War"],
+};
+
+const ALL_GENRES = [...new Set(MOVIES_DATA.flatMap(m => m.genres))].sort();
+
+const SORT_FUNCS = {
+  votes: (a, b) => b.votes - a.votes,
+  rating: (a, b) => b.rating - a.rating,
+  year_desc: (a, b) => (b.year || 0) - (a.year || 0),
+  year_asc: (a, b) => (a.year || 0) - (b.year || 0),
+};
+
+// -----------------------------------------------------------------
+// DOM
+// -----------------------------------------------------------------
+const video = document.getElementById("video");
+const statusEl = document.getElementById("status");
+const bottomText = document.getElementById("bottom_text");
+const historyBox = document.getElementById("history_box");
+const startBtn = document.getElementById("start_btn");
+const genreSelect = document.getElementById("genre");
+const minRatingInput = document.getElementById("min_rating");
+const minRatingVal = document.getElementById("min_rating_val");
+const moodGoalSelect = document.getElementById("mood_goal");
+const sortBySelect = document.getElementById("sort_by");
+
+ALL_GENRES.forEach((name) => {
+  const opt = document.createElement("option");
+  opt.value = name; opt.textContent = name;
+  genreSelect.appendChild(opt);
+});
+minRatingInput.addEventListener("input", () => { minRatingVal.textContent = minRatingInput.value; });
+
+let modelsReady = false;
+let lastCategoryKey = null;
+const pools = {};   // cacheKey -> { pool: [...], shownTitles: Set, current: movie }
+let history = [];
+
+const MODEL_URL = "https://cdn.jsdelivr.net/npm/@vladmandic/face-api/model";
+
+async function loadModels() {
+  await Promise.all([
+    faceapi.nets.tinyFaceDetector.loadFromUri(MODEL_URL),
+    faceapi.nets.faceLandmark68Net.loadFromUri(MODEL_URL),
+    faceapi.nets.faceExpressionNet.loadFromUri(MODEL_URL),
+  ]);
+  modelsReady = true;
+  statusEl.textContent = "Modeller hazır. Kamerayı başlatabilirsin.";
+}
+loadModels().catch((err) => { statusEl.textContent = "Model yüklenemedi: " + err.message; });
+
+async function startCamera() {
+  if (!modelsReady) { statusEl.textContent = "Modeller henüz hazır değil, birkaç saniye bekle."; return; }
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({ video: {} });
+    video.srcObject = stream;
+    startBtn.disabled = true;
+    statusEl.textContent = "Kamera açık, ifade takip ediliyor...";
+    setInterval(tick, 2000);
+  } catch (err) {
+    statusEl.textContent = "Kameraya erişilemedi: " + err.message;
+  }
+}
+startBtn.addEventListener("click", startCamera);
+
+async function tick() {
+  if (video.readyState < 2) return;
+  const detection = await faceapi
+    .detectSingleFace(video, new faceapi.TinyFaceDetectorOptions())
+    .withFaceLandmarks()
+    .withFaceExpressions();
+
+  if (!detection) { statusEl.textContent = "Yüz bulunamadı, kameraya bak."; return; }
+
+  const expressions = detection.expressions;
+  let bestLabel = null, bestScore = -1;
+  Object.keys(expressions).forEach((key) => {
+    if (expressions[key] > bestScore) { bestScore = expressions[key]; bestLabel = key; }
+  });
+
+  statusEl.textContent = `Tespit edilen ifade: ${bestLabel} (%${Math.round(bestScore * 100)})`;
+  recommend(bestLabel, bestScore);
+}
+
+function resolveTargetCategory(detectedLabel) {
+  const detectedCategory = EMOTION_TO_CATEGORY[detectedLabel] || "dusundurucu";
+  const goal = moodGoalSelect.value;
+  if (goal === "reinforce") return detectedCategory;
+  if (goal === "happier") return "neseli";
+  return ["huzunlu", "gergin", "enerjik"].includes(detectedCategory) ? "neseli" : detectedCategory;
+}
+
+function buildPool(targetCategory, genreName, minRating, sortBy) {
+  const wanted = genreName ? [genreName] : MOOD_TO_GENRES[targetCategory];
+  let pool = MOVIES_DATA.filter((m) => m.genres.some((g) => wanted.includes(g)));
+  if (minRating > 0) pool = pool.filter((m) => m.rating >= minRating);
+  pool = [...pool].sort(SORT_FUNCS[sortBy] || SORT_FUNCS.votes);
+  return pool.slice(0, 40);
+}
+
+function recommend(detectedLabel, score) {
+  const targetCategory = resolveTargetCategory(detectedLabel);
+  const genreName = genreSelect.value;
+  const minRating = parseFloat(minRatingInput.value);
+  const sortBy = sortBySelect.value;
+  const cacheKey = `${targetCategory}|${genreName}|${minRating}|${sortBy}`;
+
+  let entry = pools[cacheKey];
+  if (!entry) {
+    const pool = buildPool(targetCategory, genreName, minRating, sortBy);
+    if (pool.length === 0) {
+      bottomText.textContent = "⚠️ Bu filtrelerle sonuç yok, filtreleri gevşet.";
+      return;
+    }
+    entry = { pool, shownTitles: new Set(), current: null };
+    pools[cacheKey] = entry;
+  }
+
+  if (cacheKey !== lastCategoryKey) {
+    let unseen = entry.pool.filter((m) => !entry.shownTitles.has(m.title));
+    if (unseen.length === 0) { entry.shownTitles.clear(); unseen = entry.pool; }
+    const movie = unseen[Math.floor(Math.random() * unseen.length)];
+    entry.shownTitles.add(movie.title);
+    entry.current = movie;
+    lastCategoryKey = cacheKey;
+
+    const imdbUrl = `https://www.imdb.com/title/${movie.imdb_id}/`;
+    history.push({
+      zaman: new Date().toLocaleTimeString("tr-TR"),
+      ifade: detectedLabel, film: movie.title, yil: movie.year,
+      puan: movie.rating, imdbUrl,
+    });
+    renderHistory();
+  }
+
+  renderBottomBar(detectedLabel, score, entry.current);
+}
+
+function renderBottomBar(detectedLabel, score, movie) {
+  const imdbUrl = `https://www.imdb.com/title/${movie.imdb_id}/`;
+  bottomText.innerHTML =
+    `<strong>Şu an:</strong> ${detectedLabel} (%${Math.round(score * 100)})<br>` +
+    `<h3>🎬 ${movie.title} (${movie.year || "?"})</h3>` +
+    `⭐ ${movie.rating} — ${movie.genres.join(", ")}<br>` +
+    `🔗 <a href="${imdbUrl}" target="_blank" rel="noopener">IMDb'de aç</a>`;
+}
+
+function renderHistory() {
+  if (history.length === 0) { historyBox.textContent = "Henüz kayıt yok."; return; }
+  const rows = history.slice(-10).reverse().map((h) =>
+    `<div><code>${h.zaman}</code> <strong>${h.ifade}</strong> → ` +
+    `<a href="${h.imdbUrl}" target="_blank" rel="noopener">${h.film} (${h.yil || "?"})</a> ⭐${h.puan}</div>`
+  );
+  historyBox.innerHTML = rows.join("");
+}
+</script>
+</body>
+</html>

@@ -5,7 +5,7 @@ bir web uygulaması. **BTK Akademi**'deki "LLM ve Yapay Zeka" kursu
 kapsamında, **Dr. Murat Altun**'un anlattığı yapay zeka/LLM temellerinden
 yola çıkılarak geliştirilmiş bir uygulamalı proje.
 
-- Eğitmen: [Dr. Murat Altun — LinkedIn](https://www.linkedin.com/in/drmurataltun/) · GitHub: _(link eklenecek)_
+- Eğitmen: [Dr. Murat Altun — LinkedIn](https://www.linkedin.com/in/drmurataltun/) · GitHub: _(https://github.com/yapayzekaokulum)_
 - Kurum: BTK Akademi
 
 ## Nasıl çalışıyor?
